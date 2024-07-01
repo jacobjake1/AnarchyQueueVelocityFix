@@ -1,6 +1,6 @@
 # AnarchyQueue
 
-A simple queue system for **BungeeCord Servers** in the style of the 2b2t queue.
+A simple queue system for **Velocity Servers** in the style of the 2b2t queue.
 
 ![logo](https://github.com/zeroBzeroT/AnarchyQueue/blob/main/logo.jpg?raw=true)
 
@@ -32,10 +32,10 @@ Use a plugin like [QueueServerPlugin](https://github.com/zeroBzeroT/QueueServerP
 | messageConnecting    | player message, when connecting to the target server         |
 | messageFullOrOffline | player message, when the target is full or offline           |
 | serverName           | target server name displayed to the player                   |
-| kickPassthrough      | if false, players will be enqueued again                     |
-| kickOnRestart        | if true, players will be kicked when the target restarts     |
-| kickOnBusy           | if true, players will be kicked if the target is busy        |
-| bStats               | if true, plugin metrics are enabled                          |
+| kickPassthrough      | if false, players will be enqueued again                     | # not yet added
+| kickOnRestart        | if true, players will be kicked when the target restarts     | # not yet added
+| kickOnBusy           | if true, players will be kicked if the target is busy        | # not yet added
+| bStats               | if true, plugin metrics are enabled                          | # not yet added
 | sendTitle            | should the position be displayed in the center of the screen |
 
 ## BungeeCord Config (Excerpt)
