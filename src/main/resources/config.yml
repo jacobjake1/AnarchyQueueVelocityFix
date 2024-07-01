@@ -1,14 +1,14 @@
-# AnarchyQueue V${project.version}
-target: "main"
-queue: "queue"
-maxPlayers: 420
-waitOnKick: 16
-messagePosition: "&6Position in queue: &l%position%&r"
-messageConnecting: "&6Connecting to %server%&6...&r"
-messageFullOrOffline: "&6%server%&6 is full or offline&r"
-serverName: "the server"
-kickPassthrough: true
-kickOnRestart: false
-kickOnBusy: false
-bStats: true
-sendTitle: true
+# ${project.artifactId} v${project.version}
+server-main = "prison"
+server-queue = "hub"
+name = "OPGods.net" # ;)
+max-players = 710
+message-position = "Position in queue: "
+message-connecting = "Connecting to the server..."
+message-full = "Server is currently full!"
+message-offline = "Server is currently down!"
+kick = true
+wait-on-kick = 16
+send-title = true
+title-message = "&6Queue Status"
+subtitle-message = "&ePosition: %position%/%total%" # I ended up changing this in the code, so it just says whatever message-offline says, easy fix if you wanna revert it back in src
