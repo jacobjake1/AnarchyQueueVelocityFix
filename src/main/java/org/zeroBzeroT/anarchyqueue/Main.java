@@ -1,80 +1,62 @@
 package org.zeroBzeroT.anarchyqueue;
 
-import net.md_5.bungee.api.ChatColor;
-import net.md_5.bungee.api.plugin.Plugin;
-import org.bstats.bungeecord.Metrics;
+import com.google.inject.Inject;
+import com.velocitypowered.api.command.CommandManager;
+import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
+import com.velocitypowered.api.plugin.Plugin;
+import com.velocitypowered.api.plugin.annotation.DataDirectory;
+import com.velocitypowered.api.proxy.ProxyServer;
+import org.slf4j.Logger;
 
-import java.io.File;
-import java.util.concurrent.TimeUnit;
+import java.nio.file.Path;
 
-public class Main extends Plugin {
+@Plugin(
+        id = "anarchyqueue",
+        name = "AnarchyQueue",
+        version = "2.0.0-SNAPSHOT",
+        description = "velocity queue system for anarchy servers",
+        url = "https://github.com/zeroBzeroT/AnarchyQueue",
+        authors = {"bierdosenhalter", "nothub"}
+)
+public class Main {
     private static Main instance;
+    public final Logger log;
+    private final ProxyServer server;
+    private final Path dataDir;
+
+    @Inject
+    public Main(ProxyServer server, CommandManager commandManager, Logger logger, @DataDirectory final Path dataDir) {
+        this.server = server;
+        this.log = logger;
+        this.dataDir = dataDir;
+        instance = this;
+    }
 
     public static Main getInstance() {
+        if (instance == null) throw new IllegalStateException("instance was null!");
         return instance;
     }
 
-    public static void log(String module, String message) {
-        Main.getInstance().getLogger().info("§a[" + module + "] §e" + message + "§r");
-    }
-
-    @Override
-    public void onEnable() {
-        super.onEnable();
-
-        instance = this;
-
-        String folder = getDataFolder().getPath();
-
-        // Create path directories if not existent
-        //noinspection ResultOfMethodCallIgnored
-        new File(folder).mkdirs();
-
-        // Config
+    @Subscribe
+    public void onProxyInitialize(ProxyInitializeEvent event) {
         try {
-            Config.getConfig(this);
+            Config.loadConfig(dataDir);
         } catch (Exception e) {
-            e.printStackTrace();
-            onDisable();
+            log.error(e.getMessage());
+            server.shutdown();
             return;
         }
 
-        Queue queue = new Queue();
+        Queue queue = new Queue(server);
+        server.getEventManager().register(this, queue);
 
-        // Commands
-        getProxy().getPluginManager().registerCommand(this, new SlotsCommand());
-        getProxy().getPluginManager().registerCommand(this, new QueueCommand(queue));
+        server.getCommandManager().register("slots", new SlotsCommand(queue), "slot");
 
-        // Listener
-        getProxy().getPluginManager().registerListener(this, queue);
-
-        // Run queue flusher
-        getProxy().getScheduler().schedule(this, queue::flushQueue, 1, 2, TimeUnit.SECONDS);
-
-        // Run player notification
-        getProxy().getScheduler().schedule(this, queue::sendUpdate, 1, 10, TimeUnit.SECONDS);
-
-        // Print config settings
-        log("config", "§3Queue message example: §r" + ChatColor.translateAlternateColorCodes('&', Config.messagePosition.replaceAll("%position%", "42")));
-        log("config", "§3Connecting message: §r" + ChatColor.translateAlternateColorCodes('&', Config.messageConnecting));
-        log("config", "§3Full or offline message: §r" + ChatColor.translateAlternateColorCodes('&', Config.messageFullOrOffline));
-        log("config", "§3Max players on main server: §r" + Config.maxPlayers);
-        log("config", "§3Pass main server kicks to client: §r" + Config.kickPassthrough);
-        log("config", "§3Kick on restart of the main server: §r" + Config.kickOnRestart);
-        log("config", "§3Kick when the main server is busy: §r" + Config.kickOnBusy);
-        log("config", "§3Send status as title: §r" + Config.sendTitle);
-
-        // Load Plugin Metrics
-        if (Config.bStats) {
-            new Metrics(this, 16228);
-        }
-    }
-
-    @Override
-    public void onDisable() {
-        super.onDisable();
-
-        getProxy().getPluginManager().unregisterListeners(this);
-        getProxy().getPluginManager().unregisterCommands(this);
+        log.info("Queue message example: " + Config.messagePosition + "42/69");
+        log.info("Connecting message: " + Config.messageConnecting);
+        log.info("Full message: " + Config.messageFull);
+        log.info("Offline message: " + Config.messageOffline);
+        log.info("Max players on main server: " + Config.maxPlayers);
     }
 }
