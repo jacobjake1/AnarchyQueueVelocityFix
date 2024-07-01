@@ -1,73 +1,66 @@
 package org.zeroBzeroT.anarchyqueue;
 
-import net.md_5.bungee.api.plugin.Plugin;
-import net.md_5.bungee.config.Configuration;
-import net.md_5.bungee.config.ConfigurationProvider;
-import net.md_5.bungee.config.YamlConfiguration;
+import com.moandjiezana.toml.Toml;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
-import java.util.Arrays;
+import java.nio.file.Path;
 
-@SuppressWarnings("CanBeFinal")
 public class Config {
-    public static String target = null;
-    public static String queue = null;
+    public static String serverMain = null;
+    public static String serverQueue = null;
+    public static String name = null;
     public static int maxPlayers = 0;
     public static String messagePosition = null;
     public static String messageConnecting = null;
-    public static String messageFullOrOffline = null;
-    public static String serverName = null;
+    public static String messageFull = null;
+    public static String messageOffline = null;
+    public static boolean kick = true;
     public static int waitOnKick = 0;
-    public static boolean kickPassthrough = true;
-    public static boolean kickOnRestart = false;
-    public static boolean kickOnBusy = false;
-    public static boolean bStats = true;
-
     public static boolean sendTitle = true;
+    public static String titleMessage = null;
+    public static String subtitleMessage = null;
 
-    /**
-     * Loads a config file, and if it doesn't exist creates one
-     *
-     * @param plugin BungeeCord plugin
-     */
-    static void getConfig(Plugin plugin) throws Exception {
-        File configFile = new File(plugin.getDataFolder(), "config.yml");
+    static void loadConfig(Path path) throws IOException {
+        File file = new File(path.toFile(), "config.toml");
+        if (!file.getParentFile().exists()) {
+            if (!file.getParentFile().mkdirs()) throw new IllegalStateException("unable to create data dir!");
+        }
 
-        if (configFile.exists()) {
-            loadConfig(configFile);
-        } else {
-            try {
-                InputStream in = plugin.getResourceAsStream("config.yml");
-                Files.copy(in, configFile.toPath());
-                loadConfig(configFile);
+        if (!file.exists()) {
+            try (InputStream input = Config.class.getResourceAsStream("/" + file.getName())) {
+                if (input != null) {
+                    Files.copy(input, file.toPath());
+                } else {
+                    if (!file.createNewFile()) throw new IllegalStateException("unable to load default config!");
+                }
             } catch (IOException exception) {
-                exception.printStackTrace();
+                Main.getInstance().log.warn(exception.getMessage());
+                return;
             }
         }
 
-        messageConnecting = messageConnecting.replaceAll("%server%", serverName);
-        messageFullOrOffline = messageFullOrOffline.replaceAll("%server%", serverName);
+        Toml toml = new Toml().read(file);
+        serverMain = toml.getString("server-main", "main");
+        serverQueue = toml.getString("server-queue", "queue");
+        name = toml.getString("name", "0b0t");
+        maxPlayers = toml.getLong("max-players", 420L).intValue();
+        messagePosition = toml.getString("message-position", "&ePosition in queue: ");
+        messageConnecting = toml.getString("message-connecting", "&aConnecting to the server...");
+        messageFull = toml.getString("message-full", "&cServer is currently full!");
+        messageOffline = toml.getString("message-offline", "&6&lWaiting for server to come online");
+        kick = toml.getBoolean("kick", true);
+        waitOnKick = toml.getLong("wait-on-kick", 16L).intValue();
+        sendTitle = toml.getBoolean("send-title", true);
+        titleMessage = toml.getString("title-message", "&6Queue Status");
+        subtitleMessage = toml.getString("subtitle-message", "&ePosition: %position%/%total%");
     }
 
-    /**
-     * Load the config from the plugin data folder
-     *
-     * @param configFile Path to the configuration file
-     */
-    static void loadConfig(File configFile) throws IOException {
-        Configuration config = ConfigurationProvider.getProvider(YamlConfiguration.class).load(configFile);
-
-        Arrays.asList(Config.class.getDeclaredFields()).forEach(field -> {
-            try {
-                field.setAccessible(true);
-                field.set(Config.class, config.get(field.getName()));
-            } catch (SecurityException | IllegalArgumentException | IllegalAccessException exception) {
-                Main.log("config", "§fError while loading the config. Please remove the config file and let the plugin generate a new one:");
-                exception.printStackTrace();
-            }
-        });
+    public static Component parseColor(String text) {
+        return LegacyComponentSerializer.legacyAmpersand().deserialize(text);
     }
 }
