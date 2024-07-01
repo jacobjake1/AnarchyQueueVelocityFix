@@ -1,406 +1,175 @@
 package org.zeroBzeroT.anarchyqueue;
 
-import net.md_5.bungee.api.*;
-import net.md_5.bungee.api.chat.BaseComponent;
-import net.md_5.bungee.api.chat.TextComponent;
-import net.md_5.bungee.api.config.ServerInfo;
-import net.md_5.bungee.api.connection.ProxiedPlayer;
-import net.md_5.bungee.api.connection.Server;
-import net.md_5.bungee.api.event.*;
-import net.md_5.bungee.api.plugin.Listener;
-import net.md_5.bungee.event.EventHandler;
+import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.player.ServerConnectedEvent;
+import com.velocitypowered.api.proxy.Player;
+import com.velocitypowered.api.proxy.ProxyServer;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
+import net.kyori.adventure.identity.Identity;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.title.Title;
+import org.slf4j.Logger;
 
+import java.time.Duration;
 import java.time.Instant;
-import java.util.Deque;
-import java.util.HashMap;
-import java.util.LinkedList;
-import java.util.Map.Entry;
-import java.util.Set;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
 
-public class Queue implements Listener {
-    private final Deque<ProxiedPlayer> playerQueue;
-    private final HashMap<ProxiedPlayer, Long> kickedPlayers = new HashMap<>();
-    private final Semaphore mutex = new Semaphore(1);
+public class Queue {
+    private final Logger log;
+    private final ProxyServer proxyServer;
+    private final List<Player> queuedPlayers = new CopyOnWriteArrayList<>();
 
-    /**
-     * Initializes a queue
-     */
-    public Queue() {
-        playerQueue = new LinkedList<>();
+    public Queue(ProxyServer proxyServer) {
+        this.log = Main.getInstance().log;
+        this.proxyServer = proxyServer;
 
-        Main.getInstance().getProxy().getScheduler().schedule(Main.getInstance(), () -> {
-            Set<Entry<ProxiedPlayer, Long>> entrySet = kickedPlayers.entrySet();
-            entrySet.removeIf(pair -> pair.getValue() + Config.waitOnKick < Instant.now().getEpochSecond());
-        }, 0, 1, TimeUnit.SECONDS);
+        proxyServer.getScheduler()
+                .buildTask(Main.getInstance(), this::process)
+                .delay(Duration.ofSeconds(1))
+                .repeat(Duration.ofSeconds(1))
+                .schedule();
     }
 
-    /**
-     * check if a specific player is not connected to a server
-     *
-     * @param player the player whose uuid is checked against the players on the server
-     * @param server the server that should be checked if the player is online
-     * @return true if the player is not connected
-     */
-    private static boolean isNotConnected(ProxiedPlayer player, ServerInfo server) {
-        for (ProxiedPlayer serverPlayer : server.getPlayers()) {
-            if (player.getUniqueId().equals(serverPlayer.getUniqueId())) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /**
-     * Try to connect one player to the server
-     */
-    public void flushQueue() {
-        // Ignore if queue is empty
-        if (playerQueue.isEmpty())
-            return;
-
-        // Get status of target server
-        ServerInfoGetter mainServerInfo = ServerInfoGetter.awaitServerInfo(Config.target);
-
-        // Allow player to join the main server - 1s (ping timeout) + ~500ms (connection time) < 2s (interval)
-        if (mainServerInfo.isOnline && mainServerInfo.playerCount < Config.maxPlayers && Math.min(Config.maxPlayers - mainServerInfo.playerCount, playerQueue.size()) > 0) {
-            try {
-                mutex.acquire();
-
-                ProxiedPlayer player = null;
-
-                // try to find the first player that got not kicked recently
-                for (ProxiedPlayer testPlayer : playerQueue) {
-                    if (kickedPlayers.containsKey(testPlayer))
-                        continue;
-
-                    player = testPlayer;
-                    break;
-                }
-
-                // if no player was found return
-                if (player == null) return;
-
-                playerQueue.remove(player);
-
-                if (player.isConnected()) {
-                    ProxiedPlayer finalPlayer = player;
-                    ServerInfo targetServer = ProxyServer.getInstance().getServerInfo(Config.target);
-
-                    if (isNotConnected(player, targetServer)) {
-                        Callback<Boolean> cb = (result, error) -> {
-                            if (result) {
-                                Main.log("queue", "§f" + finalPlayer.getName() + "§3 connected to server §b" + Config.target + "§3. Queue count is " + playerQueue.size() + ". Main count is " + (mainServerInfo.playerCount + 1) + " of " + Config.maxPlayers + ".");
-                            } else {
-                                Main.log("queue", "§f" + finalPlayer.getName() + "s§c connection to server §b" + Config.target + "§c failed: " + error.getMessage());
-                                finalPlayer.sendMessage(TextComponent.fromLegacyText("§cConnection to " + Config.serverName + " failed!§r"));
-                                playerQueue.add(finalPlayer);
-                            }
-                        };
-
-                        // Clear the title
-                        if (Config.sendTitle) {
-                            sendTitle(player, " ", " ", 0, 0, 0);
-                        }
-
-                        player.sendMessage(TextComponent.fromLegacyText(ChatColor.translateAlternateColorCodes('&', Config.messageConnecting) + "§r"));
-                        player.connect(targetServer, cb);
-                    } else {
-                        player.disconnect(TextComponent.fromLegacyText("§cYou are already connected to " + Config.serverName + "!"));
-                        Main.log("queue", "§f" + player.getName() + "§c was disconnected because there was already a connection for this account to the server.");
-                    }
-                }
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            } finally {
-                mutex.release();
-            }
+    @Subscribe
+    public void onServerConnectedEvent(ServerConnectedEvent e) {
+        if (e.getServer().getServerInfo().getName().equals(Config.serverQueue)) {
+            log.info("queuing " + e.getPlayer().getUsername() + " (" + e.getPlayer().getUniqueId().toString() + ")");
+            queuedPlayers.add(e.getPlayer());
+        } else if (e.getServer().getServerInfo().getName().equals(Config.serverMain)) {
+            queuedPlayers.remove(e.getPlayer());
         }
     }
 
-    /**
-     * Tells players their queue position
-     */
-    public void sendUpdate() {
-        int i = 1;
-
-        Deque<ProxiedPlayer> removePlayers = new LinkedList<>();
-
-        for (ProxiedPlayer player : playerQueue) {
-            Server playerServer = player.getServer();
-
-            // Player is not connected OR Player Server is not the Queue Server
-            if (!player.isConnected() || !playerServer.getInfo().getName().equals(Config.queue)) {
-                removePlayers.add(player);
-                continue;
-            }
-
-            player.sendMessage(TextComponent.fromLegacyText(ChatColor.translateAlternateColorCodes('&', Config.messagePosition.replaceAll("%position%", Integer.toString(i))) + "§r"));
-
-            // Title in the center of the screen
-            if (Config.sendTitle) {
-                // 10 Seconds + 1 s buffer
-                sendTitle(player, " ", ChatColor.translateAlternateColorCodes('&', Config.messagePosition.replaceAll("%position%", Integer.toString(i))) + "§r", 0, 20 * 11, 0);
-            }
-
-            i++;
-        }
-
-        for (ProxiedPlayer player : removePlayers) {
-            try {
-                // Remove Player from the queue
-                mutex.acquire();
-                playerQueue.remove(player);
-
-                Main.log("update", "§f" + player.getName() + "§3 was removed from the §dplayer queue§3 (wrong server or disconnected). Queue count is " + playerQueue.size() + ".");
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            } finally {
-                mutex.release();
-            }
-        }
-    }
-
-    /**
-     * This event is called once a connection to a server is fully operational.
-     * Add a Player to the queue if they join the queue server.
-     */
-    @EventHandler
-    public void onServerConnected(ServerConnectedEvent event) {
-        if (event.getServer().getInfo().getName().equals(Config.queue)) {
-            ProxiedPlayer player = event.getPlayer();
-
-            if (!playerQueue.contains(player)) {
-                // Add Player to queue
-                try {
-                    mutex.acquire();
-                    playerQueue.add(player);
-                    Main.log("connect", "§f" + player.getName() + "§3 was added to the §dplayer queue§3. Queue count is " + playerQueue.size() + ".");
-                } catch (InterruptedException e1) {
-                    e1.printStackTrace();
-                } finally {
-                    mutex.release();
-                }
-            }
-        }
-    }
-
-    /**
-     * Removes a Player from the queue if they were in it.
-     */
-    @EventHandler
-    public void onServerDisconnect(ServerDisconnectEvent event) {
-        ProxiedPlayer player = event.getPlayer();
-
-        if (playerQueue.contains(player)) {
-            Server playerNewServer = player.getServer();
-
-            if (playerNewServer == null || !playerNewServer.getInfo().getName().equals(Config.queue)) {
-                // Remove Player from queue
-                try {
-                    mutex.acquire();
-                    playerQueue.remove(player);
-                    Main.log("disconnect", "§f" + player.getName() + "§3 was removed from the §dplayer queue§3. Queue count is " + playerQueue.size() + ".");
-                } catch (InterruptedException e1) {
-                    e1.printStackTrace();
-                } finally {
-                    mutex.release();
-                }
-            }
-        }
-    }
-
-    /**
-     * Server went down or player got kicked or just disconnected
-     */
-    @EventHandler
-    public void onServerKick(ServerKickEvent event) {
-        if (event.getKickedFrom().getName().equals(Config.target)) {
-            // kick from target server
-            try {
-                mutex.acquire();
-                String reason = BaseComponent.toLegacyText(event.getKickReasonComponent());
-                ProxiedPlayer player = event.getPlayer();
-
-                // cancel the event, if one of the following:
-                // - kicking is not enabled
-                // - target is restarting (and restart kicks are disabled)
-                // - target is busy with connecting players (and busy kicks are disabled)
-                if (!Config.kickPassthrough
-                        || (!Config.kickOnRestart && reason.toLowerCase().contains("server is restarting"))
-                        || (!Config.kickOnRestart && reason.toLowerCase().contains("went down"))
-                        || (!Config.kickOnBusy && reason.toLowerCase().contains("too many people logging in"))
-                        || (!Config.kickOnBusy && reason.toLowerCase().contains("too fast re-login"))) {
-                    // save the disconnection time
-                    kickedPlayers.put(player, Instant.now().getEpochSecond());
-
-                    // cancel kick and send back to the queue
-                    event.setCancelled(true);
-                    event.setCancelServer(ProxyServer.getInstance().getServerInfo(Config.queue));
-
-                    // send message
-                    player.sendMessage(TextComponent.fromLegacyText("§6You were sent back to the queue for: §c" + reason.replaceAll("\n", " ") + "§r"));
-                    Main.log("kick", "§f" + player.getName() + "§3 was sent back to server §e" + Config.queue + "§3 after a disconnection (\"" + reason.replaceAll("\n", " ") + "§3\"). Kicked count is " + kickedPlayers.size() + ".");
-
-                    // the player did not leave the queue, therefore the connect event is not triggered and
-                    // a manual (re)adding to the player queue is required
-                    if (player.getServer() != null && player.getServer().getInfo() == ProxyServer.getInstance().getServerInfo(Config.queue)) {
-                        playerQueue.add(player);
-                        Main.log("kick", "§f" + player.getName() + "§3 was added to the §dplayer queue§3. Queue count is " + playerQueue.size() + ".");
-                    }
-                } else {
-                    // set the disconnect reason from the target server (not the bungee message)
-                    player.disconnect(event.getKickReasonComponent());
-                }
-            } catch (InterruptedException e1) {
-                e1.printStackTrace();
-            } finally {
-                mutex.release();
-            }
-        }
-    }
-
-    /**
-     * Called when deciding to connect to a server. At the time when this event is called, no connection has actually been made.
-     * Cancelling the event will ensure that the connection does not proceed and can be useful to prevent certain players from accessing certain servers.
-     */
-    @EventHandler
-    public void onServerConnect(ServerConnectEvent event) {
-        ProxiedPlayer player = event.getPlayer();
-
-        // check if it's a "fresh" connection - stop bungee from handling server switching
-        if (player.getServer() != null) {
-            if (player.getServer().getInfo().equals(event.getTarget()))
-                // cancel the event and stop player from accessing another server, since this is done by the plugin
-                event.setCancelled(true);
-
-            return;
-        }
-
-        // Direct connect to main server
-        if (playerQueue.size() == 0 && event.getTarget().equals(ProxyServer.getInstance().getServerInfo(Config.queue))) {
-            // Get status of target server
-            // TODO: make this check global with timed updates
-            ServerInfoGetter mainServerInfo = ServerInfoGetter.awaitServerInfo(Config.target);
-
-            if (kickedPlayers.containsKey(player)) {
-                // player was sent back to the queue after a kick on a fresh connection
-                Main.log("connect", "§f" + player.getName() + "§3 was sent to server §e" + Config.queue + "§3 after a kick from server §b" + Config.target + "§3.");
-            } else if (mainServerInfo.isOnline && mainServerInfo.playerCount < Config.maxPlayers) {
-                // main server is online and player count is lower then max
-                ServerInfo targetServer = ProxyServer.getInstance().getServerInfo(Config.target);
-
-                if (isNotConnected(player, targetServer)) {
-                    // direct connection
-                    event.setTarget(targetServer);
-                    Main.log("connect", "§f" + player.getName() + "§3 was directly connected to server §b" + Config.target + "§3. Main count is " + (mainServerInfo.playerCount + 1) + " of " + Config.maxPlayers + ".");
-                } else {
-                    player.disconnect(TextComponent.fromLegacyText("§cYou are already connected to " + Config.serverName + "!"));
-                    Main.log("connect", "§f" + player.getName() + "§c was disconnected because there was already a connection for this account to the server.");
-                }
-            } else {
-                // Send full message
-                player.sendMessage(TextComponent.fromLegacyText(ChatColor.translateAlternateColorCodes('&', Config.messageFullOrOffline)));
-            }
-        }
-    }
-
-    /**
-     * Called when a player has left the proxy, it is not safe to call any methods
-     * that perform an action on the passed player instance.
-     */
-    @EventHandler
-    public void onPlayerDisconnect(PlayerDisconnectEvent event) {
-        ProxiedPlayer player = event.getPlayer();
-
-        if (playerQueue.contains(player)) {
-            // Remove Player from queue
-            try {
-                mutex.acquire();
-                Main.log("disconnect", "§f" + player.getName() + "§3 was removed from the §dplayer queue§3. Queue count is " + playerQueue.size() + ".");
-                playerQueue.remove(player);
-            } catch (InterruptedException e1) {
-                e1.printStackTrace();
-            } finally {
-                mutex.release();
-            }
-        }
-    }
-
-    /**
-     * Sends a title and a subtitle message to the player.
-     *
-     * @param title    Title text
-     * @param subtitle Subtitle text
-     * @param fadeIn   Time in ticks for titles to fade in. Defaults to 10.
-     * @param stay     Time in ticks for titles to stay. Defaults to 70.
-     * @param fadeOut  Time in ticks for titles to fade out. Defaults to 20.
-     */
-    public void sendTitle(ProxiedPlayer player, String title, String subtitle, int fadeIn, int stay, int fadeOut) {
+    public void process() {
+        final RegisteredServer serverQueue;
         try {
-            Title bungeeTitle = Main.getInstance().getProxy().createTitle();
-            bungeeTitle.title(TextComponent.fromLegacyText(title));
-            bungeeTitle.subTitle(TextComponent.fromLegacyText(subtitle));
-            bungeeTitle.fadeIn(fadeIn);
-            bungeeTitle.stay(stay);
-            bungeeTitle.fadeOut(fadeOut);
-            player.sendTitle(bungeeTitle);
-        } catch (Exception e) {
-            Main.log("sendTitle", "§cCould not send title to §f" + player.getName() + "§c: " + e.getMessage());
+            serverQueue = getServer(Config.serverQueue);
+        } catch (ServerNotReachableException e) {
+            log.warn(e.getMessage());
+            return;
+        }
+
+        queuedPlayers.removeIf(player -> !serverQueue.getPlayersConnected().contains(player));
+
+        if (queuedPlayers.size() == 0) return;
+
+        RegisteredServer serverMain = null;
+        boolean isServerDown = true;
+        try {
+            serverMain = getServer(Config.serverMain);
+            isServerDown = false;
+        } catch (ServerNotReachableException e) {
+            // Server is down, isServerDown remains true
+        }
+
+        final boolean full = !isServerDown && serverMain.getPlayersConnected().size() >= Config.maxPlayers;
+
+        // Send title messages constantly
+        sendInfos(serverQueue, full, isServerDown);
+
+        // Send chat messages every 10 seconds
+        if (Instant.now().getEpochSecond() % 10 == 0) {
+            sendChatInfos(serverQueue, full, isServerDown);
+        }
+
+        if (full || isServerDown) return;
+
+        UUID uuid = queuedPlayers.get(0).getUniqueId();
+        log.info("processing " + uuid.toString());
+
+        final RegisteredServer finalServerMain = serverMain;
+        serverQueue.getPlayersConnected().stream()
+                .filter(p -> p.getUniqueId().equals(uuid))
+                .findAny().ifPresent(p -> {
+                    clearChat(p);
+                    p.sendMessage(Identity.nil(), Config.parseColor(Config.messageConnecting));
+                    try {
+                        if (p.createConnectionRequest(finalServerMain).connect().get().isSuccessful()) queuedPlayers.remove(0);
+                    } catch (InterruptedException | ExecutionException e) {
+                        log.error("unable to connect " + p.getUsername() + "(" + p.getUniqueId().toString() + ") to " + Config.serverMain + ": " + e.getMessage());
+                    }
+                });
+    }
+
+    private void sendInfos(RegisteredServer serverQueue, boolean full, boolean isServerDown) {
+        for (int i = 0; i < queuedPlayers.size(); i++) {
+            Player player = queuedPlayers.get(i);
+            if (isServerDown) {
+                sendTitle(player, -1, -1, Config.messageOffline);
+            } else if (full) {
+                sendTitle(player, -1, -1, Config.messageFull);
+            } else {
+                sendTitle(player, i + 1, queuedPlayers.size(), null);
+            }
         }
     }
 
-    /**
-     * Gets current queue length.
-     * @return Current length of the player queue
-     */
-    public int queueLength() {
-        if(playerQueue == null)
-            return -1;
-
-        return playerQueue.size();
+    private void sendChatInfos(RegisteredServer serverQueue, boolean full, boolean isServerDown) {
+        for (int i = 0; i < queuedPlayers.size(); i++) {
+            Player player = queuedPlayers.get(i);
+            clearChat(player);
+            if (isServerDown) {
+                player.sendMessage(Identity.nil(), Config.parseColor(Config.messageOffline));
+            } else if (full) {
+                player.sendMessage(Identity.nil(), Config.parseColor(Config.messageFull));
+            } else {
+                String message = Config.messagePosition + (i + 1) + "/" + queuedPlayers.size();
+                player.sendMessage(Identity.nil(), Config.parseColor(message));
+            }
+        }
     }
 
-    /**
-     * Test a Server Connection and return the server ping info
-     */
-    private static class ServerInfoGetter implements Callback<ServerPing> {
-        public boolean done = false;
-        public int playerCount = Integer.MAX_VALUE;
-        public boolean isOnline = false;
-
-        public static ServerInfoGetter awaitServerInfo(String name) {
-            ServerInfoGetter sig = new ServerInfoGetter();
-            ProxyServer.getInstance().getServerInfo(name).ping(sig);
-
-            int slept = 0;
-
-            // Timeout
-            try {
-                while (!sig.done && slept < 1000) {
-                    //noinspection BusyWait
-                    Thread.sleep(10);
-                    slept += 10;
-                }
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-
-            return sig;
+    private void sendTitle(Player player, int position, int total, String overrideSubtitle) {
+        Component title = Config.parseColor(Config.titleMessage);
+        Component subtitle;
+        if (overrideSubtitle != null) {
+            subtitle = Config.parseColor(overrideSubtitle);
+        } else {
+            subtitle = Config.parseColor(Config.subtitleMessage
+                    .replace("%position%", String.valueOf(position))
+                    .replace("%total%", String.valueOf(total)));
         }
 
-        @Override
-        public void done(ServerPing serverPing, Throwable throwable) {
-            if (throwable != null) {
-                // we had an error, so we assume the server is offline
-                return;
-            }
+        player.showTitle(Title.title(
+                title,
+                subtitle,
+                Title.Times.of(Duration.ZERO, Duration.ofSeconds(20), Duration.ofSeconds(1))
+        ));
+    }
 
-            isOnline = true;
-            playerCount = serverPing.getPlayers().getOnline();
-            done = true;
+    private void clearChat(Player player) {
+        for (int i = 0; i < 100; i++) {
+            player.sendMessage(Component.empty());
         }
+    }
+
+    private RegisteredServer getServer(String name) throws ServerNotReachableException {
+        Optional<RegisteredServer> serverOpt = proxyServer.getServer(name);
+        if (!serverOpt.isPresent()) {
+            throw new ServerNotReachableException("Server " + name + " is not configured!");
+        }
+
+        final RegisteredServer server = serverOpt.get();
+        try {
+            server.ping().get();
+        } catch (InterruptedException | ExecutionException e) {
+            throw new ServerNotReachableException("Server " + name + " is not reachable: " + e.getMessage());
+        }
+
+        return server;
+    }
+
+    private static class ServerNotReachableException extends Exception {
+        public ServerNotReachableException(String message) {
+            super(message);
+        }
+    }
+
+    public List<Player> getQueuedPlayers() {
+        return queuedPlayers;
     }
 }
