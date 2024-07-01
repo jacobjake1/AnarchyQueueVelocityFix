@@ -1,31 +1,34 @@
 package org.zeroBzeroT.anarchyqueue;
 
-import net.md_5.bungee.api.CommandSender;
-import net.md_5.bungee.api.ProxyServer;
-import net.md_5.bungee.api.chat.TextComponent;
-import net.md_5.bungee.api.plugin.Command;
+import com.velocitypowered.api.command.SimpleCommand;
+import com.velocitypowered.api.proxy.Player;
+import net.kyori.adventure.text.Component;
 
-/**
- * SlotsCommand
- */
-public class SlotsCommand extends Command {
+public class SlotsCommand implements SimpleCommand {
 
-    public SlotsCommand() {
-        super("maxplayers");
+    private final Queue queue;
+
+    public SlotsCommand(Queue queue) {
+        this.queue = queue;
     }
 
     @Override
-    public void execute(CommandSender sender, String[] args) {
-        if (sender != ProxyServer.getInstance().getConsole()) {
-            sender.sendMessage(new TextComponent("§cUnknown command. Type \"/help\" for help."));
-            return;
-        } else if (args.length != 1) {
-            sender.sendMessage(new TextComponent("§3Current maximum player capacity for the main server is " + Config.maxPlayers + "."));
+    public void execute(Invocation invocation) {
+        if (!(invocation.source() instanceof Player)) {
+            invocation.source().sendMessage(Component.text("This command can only be executed by players."));
             return;
         }
 
-        int maxPlayers = Integer.parseInt(args[0]);
-        sender.sendMessage(new TextComponent("§3Changed maximum player capacity for the main server to " + maxPlayers + "."));
-        Config.maxPlayers = maxPlayers;
+        Player player = (Player) invocation.source();
+        int queueSize = queue.getQueuedPlayers().size();
+        int maxPlayers = Config.maxPlayers;
+
+        player.sendMessage(Component.text("Queue size: " + queueSize));
+        player.sendMessage(Component.text("Max players: " + maxPlayers));
+    }
+
+    @Override
+    public boolean hasPermission(Invocation invocation) {
+        return true; // Allow all players to use this command
     }
 }
